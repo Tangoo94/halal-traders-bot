@@ -1,200 +1,176 @@
 import os
 import time
 import requests
-from binance.client import Client
-from binance.exceptions import BinanceAPIException
+from market_data import get_binance_24h_data
 
-# ==========================
-# ENVIRONMENT VARIABLES
-# ==========================
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
-BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
+# =========================
+# ENV
+# =========================
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN missing")
+    raise RuntimeError("BOT_TOKEN is missing")
 
-API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/"
+TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-# Binance client (SPOT ONLY)
-client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
-
-# ==========================
+# =========================
 # SETTINGS
-# ==========================
+# =========================
 POLL_INTERVAL = 60  # seconds
-PUMP_PRICE_THRESHOLD = 0.05   # 5%
-PUMP_VOLUME_MULTIPLIER = 1.5  # 1.5x volume
-
-# Toggle halal mode
-HALAL_ONLY = True
 
 HALAL_COINS = [
     "BTCUSDT", "ETHUSDT", "BNBUSDT",
-    "ADAUSDT", "SOLUSDT", "XRPUSDT"
+    "SOLUSDT", "ADAUSDT", "XRPUSDT",
+    "MATICUSDT", "DOTUSDT", "LINKUSDT"
 ]
 
-history = {}
-BROADCAST_CHAT_ID = None  # auto-set on /start
+# Pump conditions
+MIN_PRICE_CHANGE = 3.0      # %
+MIN_VOLUME_USDT = 5_000_000 # USDT
 
-# ==========================
+last_update_id = 0
+
+# =========================
 # TELEGRAM
-# ==========================
+# =========================
 def send_message(chat_id, text):
+    url = f"{TELEGRAM_API}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
     try:
-        requests.post(
-            API_URL + "sendMessage",
-            json={"chat_id": chat_id, "text": text}
-        )
+        requests.post(url, json=payload, timeout=10)
     except Exception as e:
         print("Telegram error:", e)
 
-def get_updates(offset=None):
-    try:
-        params = {"timeout": 100}
-        if offset:
-            params["offset"] = offset
-        return requests.get(API_URL + "getUpdates", params=params).json()
-    except:
-        return {"ok": False, "result": []}
+def get_updates():
+    global last_update_id
+    url = f"{TELEGRAM_API}/getUpdates"
+    params = {"timeout": 30, "offset": last_update_id + 1}
 
-# ==========================
-# DATA FETCH (BINANCE → COINGECKO FALLBACK)
-# ==========================
-def get_symbols():
     try:
-        info = client.get_exchange_info()
-        symbols = [
-            s["symbol"] for s in info["symbols"]
-            if s["quoteAsset"] == "USDT" and s["status"] == "TRADING"
-        ]
-        if HALAL_ONLY:
-            symbols = [s for s in symbols if s in HALAL_COINS]
-        return symbols
-    except BinanceAPIException as e:
-        print("Binance blocked → fallback symbols")
-        return HALAL_COINS if HALAL_ONLY else []
-
-def get_ticker(symbol):
-    try:
-        t = client.get_ticker_24hr(symbol=symbol)
-        return {
-            "price": float(t["lastPrice"]),
-            "price_change": float(t["priceChangePercent"]) / 100,
-            "volume": float(t["quoteVolume"])
-        }
-    except BinanceAPIException:
-        return get_ticker_coingecko(symbol)
-
-def get_ticker_coingecko(symbol):
-    try:
-        coin = symbol.replace("USDT", "").lower()
-        url = f"https://api.coingecko.com/api/v3/simple/price"
-        params = {
-            "ids": coin,
-            "vs_currencies": "usd",
-            "include_24hr_change": "true"
-        }
-        r = requests.get(url, params=params).json()
-        if coin in r:
-            return {
-                "price": r[coin]["usd"],
-                "price_change": r[coin].get("usd_24h_change", 0) / 100,
-                "volume": 1
-            }
+        r = requests.get(url, params=params, timeout=35).json()
+        if r["ok"]:
+            return r["result"]
     except:
         pass
-    return None
+    return []
 
-# ==========================
-# SIGNALS
-# ==========================
-def check_pump(symbol):
-    data = get_ticker(symbol)
+# =========================
+# SIGNAL LOGIC
+# =========================
+def scan_pumps():
+    data = get_binance_24h_data()
     if not data:
-        return None
+        return []
 
-    prev = history.get(symbol)
-    history[symbol] = data
+    signals = []
 
-    if not prev:
-        return None
+    for coin in data:
+        symbol = coin["symbol"]
+        if symbol not in HALAL_COINS:
+            continue
 
-    volume_ratio = data["volume"] / max(prev["volume"], 1)
+        price_change = float(coin["priceChangePercent"])
+        volume = float(coin["quoteVolume"])
+        price = float(coin["lastPrice"])
 
-    if (
-        data["price_change"] >= PUMP_PRICE_THRESHOLD
-        and volume_ratio >= PUMP_VOLUME_MULTIPLIER
-    ):
-        return (
-            f"🚀 PUMP ALERT\n"
-            f"{symbol}\n"
-            f"Price +{data['price_change']*100:.2f}%\n"
-            f"Volume x{volume_ratio:.2f}"
-        )
-    return None
+        if price_change >= MIN_PRICE_CHANGE and volume >= MIN_VOLUME_USDT:
+            confidence = min(100, int((price_change * volume) / 1_000_000))
 
-def check_signal(symbol):
-    try:
-        klines = client.get_klines(
-            symbol=symbol,
-            interval=Client.KLINE_INTERVAL_5MINUTE,
-            limit=20
-        )
-        closes = [float(k[4]) for k in klines]
-        short = sum(closes[-5:]) / 5
-        long = sum(closes) / 20
-        price = closes[-1]
+            signals.append(
+                f"🚀 *HALAL PUMP ALERT*\n"
+                f"🪙 *{symbol}*\n"
+                f"💵 Price: `{price}`\n"
+                f"📈 Change: `{price_change:.2f}%`\n"
+                f"💰 Volume: `{volume:,.0f} USDT`\n"
+                f"🧠 Confidence: `{confidence}%`"
+            )
 
-        if short > long:
-            return f"📈 BUY {symbol}\nPrice: {price:.4f}"
-        elif short < long:
-            return f"📉 SELL {symbol}\nPrice: {price:.4f}"
-    except BinanceAPIException:
-        pass
-    return None
+    return signals
 
-# ==========================
+def scan_signals():
+    data = get_binance_24h_data()
+    if not data:
+        return []
+
+    messages = []
+
+    for coin in data:
+        symbol = coin["symbol"]
+        if symbol not in HALAL_COINS:
+            continue
+
+        price_change = float(coin["priceChangePercent"])
+        price = float(coin["lastPrice"])
+
+        if price_change > 1:
+            messages.append(
+                f"📈 *BUY SIGNAL*\n"
+                f"{symbol}\n"
+                f"Price: `{price}`\n"
+                f"Trend: Bullish"
+            )
+        elif price_change < -1:
+            messages.append(
+                f"📉 *SELL SIGNAL*\n"
+                f"{symbol}\n"
+                f"Price: `{price}`\n"
+                f"Trend: Bearish"
+            )
+
+    return messages
+
+# =========================
 # MAIN LOOP
-# ==========================
-last_update_id = None
-symbols = get_symbols()
-print(f"Scanning {len(symbols)} symbols")
+# =========================
+print("✅ Halal Traders Bot started")
 
 while True:
-    updates = get_updates(last_update_id)
-    if updates["ok"]:
-        for u in updates["result"]:
-            last_update_id = u["update_id"] + 1
-            if "message" in u:
-                chat_id = u["message"]["chat"]["id"]
-                text = u["message"].get("text", "")
+    updates = get_updates()
 
-                if text == "/start":
-                    BROADCAST_CHAT_ID = chat_id
-                    send_message(
-                        chat_id,
-                        "✅ Halal Traders Bot Active\n\n"
-                        "/pump → detect pumps\n"
-                        "/signal → buy/sell signals"
-                    )
+    for update in updates:
+        last_update_id = update["update_id"]
 
-                elif text == "/pump":
-                    for s in symbols:
-                        msg = check_pump(s)
-                        if msg:
-                            send_message(chat_id, msg)
+        if "message" not in update:
+            continue
 
-                elif text == "/signal":
-                    for s in symbols:
-                        sig = check_signal(s)
-                        if sig:
-                            send_message(chat_id, sig)
+        chat_id = update["message"]["chat"]["id"]
+        text = update["message"].get("text", "")
 
-    if BROADCAST_CHAT_ID:
-        for s in symbols:
-            msg = check_pump(s)
-            if msg:
-                send_message(BROADCAST_CHAT_ID, msg)
+        if text == "/start":
+            send_message(
+                chat_id,
+                "🕌 *Halal Traders Bot*\n\n"
+                "/pump – Detect halal pumps\n"
+                "/signal – Buy/Sell signals\n"
+                "/status – Bot status"
+            )
+
+        elif text == "/pump":
+            results = scan_pumps()
+            if not results:
+                send_message(chat_id, "😴 No pumps detected")
+            else:
+                for msg in results:
+                    send_message(chat_id, msg)
+
+        elif text == "/signal":
+            results = scan_signals()
+            if not results:
+                send_message(chat_id, "⚖️ No clear signals")
+            else:
+                for msg in results:
+                    send_message(chat_id, msg)
+
+        elif text == "/status":
+            send_message(
+                chat_id,
+                "✅ Bot running\n"
+                "📡 Source: Binance Spot (public)\n"
+                "🕌 Mode: Halal only"
+            )
 
     time.sleep(POLL_INTERVAL)
