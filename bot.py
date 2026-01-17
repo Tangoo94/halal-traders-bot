@@ -7,7 +7,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 # ================= CONFIG =================
 
 BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"  # optional if using env
-ADMIN_ID = 123456789  # 🔴 PUT YOUR TELEGRAM ID HERE
+ADMIN_ID = 8497827576  # 🔴 PUT YOUR TELEGRAM ID HERE
 
 BINANCE_BASE = "https://data.binance.vision"
 
