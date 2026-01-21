@@ -1,9 +1,8 @@
 import asyncio
-import pandas as pd
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
-from config import BOT_TOKEN, HALAL_COINS, ALL_COINS, VIP_CHAT_ID, FREE_CHAT_ID, DEFAULT_TIMEFRAME, SCAN_INTERVAL
-from engine import run_engine, calculate_confidence, rsi_ema_confirmation
+from config import *
+from engine import run_engine
 
 # --- USER SETTINGS ---
 user_settings = {
@@ -12,7 +11,8 @@ user_settings = {
     "interval": SCAN_INTERVAL,
     "chat_id": None,
     "mode": "silent",  # silent / aggressive
-    "vip": False
+    "vip": False,
+    "multiple_selected": False
 }
 
 # --- START COMMAND ---
@@ -39,7 +39,6 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
-    # --- COINS ---
     if q.data == "halal":
         user_settings["coins"] = HALAL_COINS
         await q.edit_message_text("✅ Halal coins enabled")
@@ -48,7 +47,6 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_settings["coins"] = ALL_COINS
         await q.edit_message_text("⚠️ All coins enabled")
 
-    # --- TIMEFRAMES ---
     elif q.data == "tf":
         kb = [
             [InlineKeyboardButton("5m", callback_data="5m"), InlineKeyboardButton("15m", callback_data="15m")],
@@ -59,7 +57,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("⏱ Select Timeframe(s):", reply_markup=InlineKeyboardMarkup(kb))
 
     elif q.data in ["5m", "15m", "1h", "4h", "1d"]:
-        if "multiple_selected" in user_settings and user_settings["multiple_selected"]:
+        if user_settings.get("multiple_selected", False):
             if q.data not in user_settings["timeframes"]:
                 user_settings["timeframes"].append(q.data)
         else:
@@ -74,22 +72,18 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_settings["multiple_selected"] = True
         await q.edit_message_text("✅ Multiple timeframe mode enabled")
 
-    # --- MODE ---
     elif q.data == "mode":
         user_settings["mode"] = "aggressive" if user_settings["mode"] == "silent" else "silent"
         await q.edit_message_text(f"⚡ Mode set to {user_settings['mode'].capitalize()}")
 
-    # --- VIP / FREE ---
     elif q.data == "vip":
         user_settings["vip"] = not user_settings["vip"]
         await q.edit_message_text(f"👑 {'VIP' if user_settings['vip'] else 'Free'} channel enabled")
 
-    # --- SKIP / AUTO ---
     elif q.data == "skip":
         await q.edit_message_text("⏩ Auto mode started")
         asyncio.create_task(run_engine(context, user_settings))
 
-    # --- STATUS ---
     elif q.data == "status":
         msg = f"""
 📡 BOT STATUS
