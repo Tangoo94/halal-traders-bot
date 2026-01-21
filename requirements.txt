@@ -1,5 +1,6 @@
 python-telegram-bot==20.7
-requests
-pandas
-numpy
-ta
+requests>=2.31.0
+pandas>=2.1.1
+numpy>=1.26.0
+ta>=0.11.1
+aiohttp>=3.8.5
