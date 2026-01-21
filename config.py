@@ -1,21 +1,15 @@
-# -------------------------------
-# CONFIGURATION FILE
-# -------------------------------
+# config.py
 
-BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"  # Replace with your Telegram Bot token
+# --- TELEGRAM ---
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # Replace with your Telegram bot token
 
-# Halal coins example
-HALAL_COINS = ["BTCUSDT", "ETHUSDT", "BNBUSDT"]
+# --- COINS ---
+HALAL_COINS = ["BTCUSDT", "ETHUSDT", "BNBUSDT"]  # Halal coins example
+ALL_COINS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "DOGEUSDT", "ADAUSDT", "XRPUSDT"]  # All coins
 
-# All coins example
-ALL_COINS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "DOGEUSDT", "XRPUSDT", "ADAUSDT"]
-
-# Default timeframe
+# --- TIMEFRAMES & SCAN ---
 DEFAULT_TIMEFRAME = "4h"
+SCAN_INTERVAL = 60  # seconds between scans
 
-# Scan interval (seconds)
-SCAN_INTERVAL = 60
-
-# VIP / Free Telegram chat IDs
-VIP_CHAT_ID = 123456789   # Replace with your VIP channel/chat ID
-FREE_CHAT_ID = 987654321  # Replace with your Free channel/chat ID
+# --- ALERT SETTINGS ---
+ALERT_CHAT_ID = None  # will be set dynamically per user
