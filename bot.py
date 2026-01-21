@@ -1,151 +1,45 @@
 import asyncio
-import logging
-import os
-import requests
 import pandas as pd
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+from config import BOT_TOKEN, HALAL_COINS, ALL_COINS, VIP_CHAT_ID, FREE_CHAT_ID, DEFAULT_TIMEFRAME, SCAN_INTERVAL
+from engine import run_engine, calculate_confidence, rsi_ema_confirmation
 
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-)
-
-# ================== CONFIG ==================
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # ✅ Railway Variable
-SCAN_INTERVAL = 60  # seconds
-
-HALAL_COINS = [
-    "BTCUSDT",
-    "ETHUSDT",
-    "BNBUSDT",
-]
-
-ALL_COINS = [
-    "BTCUSDT",
-    "ETHUSDT",
-    "BNBUSDT",
-    "XRPUSDT",
-    "ADAUSDT",
-    "DOGEUSDT",
-]
-
-DEFAULT_TIMEFRAME = "4h"
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-
-# ================== GLOBAL STATE ==================
-
+# --- USER SETTINGS ---
 user_settings = {
     "coins": HALAL_COINS,
-    "timeframe": DEFAULT_TIMEFRAME,
+    "timeframes": [DEFAULT_TIMEFRAME],
+    "interval": SCAN_INTERVAL,
     "chat_id": None,
-    "running": False,
+    "mode": "silent",  # silent / aggressive
+    "vip": False
 }
 
-# ================== MARKET DATA ==================
-
-def get_klines(symbol: str, interval: str, limit: int = 50):
-    url = (
-        f"https://api.binance.com/api/v3/klines"
-        f"?symbol={symbol}&interval={interval}&limit={limit}"
-    )
-    try:
-        data = requests.get(url, timeout=10).json()
-        df = pd.DataFrame(data, columns=[
-            "open_time","open","high","low","close","volume",
-            "close_time","qav","trades","tbb","tbq","ignore"
-        ])
-        df["close"] = pd.to_numeric(df["close"])
-        df["volume"] = pd.to_numeric(df["volume"])
-        return df
-    except Exception as e:
-        logging.error(f"Klines error {symbol}: {e}")
-        return None
-
-# ================== SIMPLE EARLY SIGNAL LOGIC ==================
-# (NO TP / SL — engine only flags opportunities)
-
-def early_signal(df: pd.DataFrame):
-    if df is None or len(df) < 20:
-        return False
-
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
-
-    price_change = (last["close"] - prev["close"]) / prev["close"]
-    volume_spike = last["volume"] > df["volume"].rolling(20).mean().iloc[-1] * 1.8
-
-    return price_change > 0.01 and volume_spike
-
-# ================== ENGINE ==================
-
-async def run_engine(context: ContextTypes.DEFAULT_TYPE):
-    if user_settings["running"]:
-        return
-
-    user_settings["running"] = True
-    chat_id = user_settings["chat_id"]
-
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text="🚀 Auto scan started"
-    )
-
-    while True:
-        try:
-            for symbol in user_settings["coins"]:
-                df = get_klines(symbol, user_settings["timeframe"])
-                if early_signal(df):
-                    price = df["close"].iloc[-1]
-                    msg = (
-                        "🚨 EARLY SIGNAL DETECTED\n\n"
-                        f"🪙 Coin: {symbol}\n"
-                        f"⏱ Timeframe: {user_settings['timeframe']}\n"
-                        f"💰 Price: {price}\n\n"
-                        "🕌 Spot only\n"
-                        "📌 No leverage\n"
-                        "⚠️ Not financial advice"
-                    )
-                    await context.bot.send_message(chat_id=chat_id, text=msg)
-
-            await asyncio.sleep(SCAN_INTERVAL)
-
-        except Exception as e:
-            logging.error(f"Engine error: {e}")
-            await asyncio.sleep(10)
-
-# ================== TELEGRAM HANDLERS ==================
-
+# --- START COMMAND ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_settings["chat_id"] = update.effective_chat.id
 
     keyboard = [
         [InlineKeyboardButton("🕌 Halal Coins Only", callback_data="halal")],
         [InlineKeyboardButton("💹 All Coins", callback_data="all")],
-        [InlineKeyboardButton("⏱ Timeframe", callback_data="tf")],
+        [InlineKeyboardButton("⏱ Timeframes", callback_data="tf")],
+        [InlineKeyboardButton("🔇 Silent / ⚡ Aggressive", callback_data="mode")],
+        [InlineKeyboardButton("👑 VIP / Free", callback_data="vip")],
         [InlineKeyboardButton("⏩ Skip (Auto Mode)", callback_data="skip")],
-        [InlineKeyboardButton("📡 Status", callback_data="status")],
+        [InlineKeyboardButton("📡 Status", callback_data="status")]
     ]
 
     await update.message.reply_text(
         "🕌 Halal Traders Bot\nSmart Spot Signals",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
+# --- BUTTON HANDLER ---
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
+    # --- COINS ---
     if q.data == "halal":
         user_settings["coins"] = HALAL_COINS
         await q.edit_message_text("✅ Halal coins enabled")
@@ -154,46 +48,66 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_settings["coins"] = ALL_COINS
         await q.edit_message_text("⚠️ All coins enabled")
 
+    # --- TIMEFRAMES ---
     elif q.data == "tf":
         kb = [
-            [InlineKeyboardButton("1H", callback_data="1h")],
-            [InlineKeyboardButton("4H", callback_data="4h")],
+            [InlineKeyboardButton("5m", callback_data="5m"), InlineKeyboardButton("15m", callback_data="15m")],
+            [InlineKeyboardButton("1H", callback_data="1h"), InlineKeyboardButton("4H", callback_data="4h")],
             [InlineKeyboardButton("1D", callback_data="1d")],
+            [InlineKeyboardButton("✅ Single", callback_data="single"), InlineKeyboardButton("📊 Multiple", callback_data="multiple")]
         ]
-        await q.edit_message_text(
-            "⏱ Select Timeframe",
-            reply_markup=InlineKeyboardMarkup(kb),
-        )
+        await q.edit_message_text("⏱ Select Timeframe(s):", reply_markup=InlineKeyboardMarkup(kb))
 
-    elif q.data in ["1h", "4h", "1d"]:
-        user_settings["timeframe"] = q.data
-        await q.edit_message_text(f"✅ Timeframe set to {q.data}")
+    elif q.data in ["5m", "15m", "1h", "4h", "1d"]:
+        if "multiple_selected" in user_settings and user_settings["multiple_selected"]:
+            if q.data not in user_settings["timeframes"]:
+                user_settings["timeframes"].append(q.data)
+        else:
+            user_settings["timeframes"] = [q.data]
+        await q.edit_message_text(f"✅ Timeframes selected: {', '.join(user_settings['timeframes'])}")
 
+    elif q.data == "single":
+        user_settings["multiple_selected"] = False
+        await q.edit_message_text("✅ Single timeframe mode")
+
+    elif q.data == "multiple":
+        user_settings["multiple_selected"] = True
+        await q.edit_message_text("✅ Multiple timeframe mode enabled")
+
+    # --- MODE ---
+    elif q.data == "mode":
+        user_settings["mode"] = "aggressive" if user_settings["mode"] == "silent" else "silent"
+        await q.edit_message_text(f"⚡ Mode set to {user_settings['mode'].capitalize()}")
+
+    # --- VIP / FREE ---
+    elif q.data == "vip":
+        user_settings["vip"] = not user_settings["vip"]
+        await q.edit_message_text(f"👑 {'VIP' if user_settings['vip'] else 'Free'} channel enabled")
+
+    # --- SKIP / AUTO ---
     elif q.data == "skip":
         await q.edit_message_text("⏩ Auto mode started")
-        asyncio.create_task(run_engine(context))
+        asyncio.create_task(run_engine(context, user_settings))
 
+    # --- STATUS ---
     elif q.data == "status":
-        msg = (
-            "📡 BOT STATUS\n\n"
-            f"Mode: {'Halal' if user_settings['coins']==HALAL_COINS else 'All'}\n"
-            f"Timeframe: {user_settings['timeframe']}\n"
-            f"Coins: {len(user_settings['coins'])}\n"
-            f"Engine: {'Running' if user_settings['running'] else 'Idle'}"
-        )
+        msg = f"""
+📡 BOT STATUS
+
+Mode: {user_settings['mode'].capitalize()}
+Coins: {len(user_settings['coins'])} ({'Halal' if user_settings['coins']==HALAL_COINS else 'All'})
+Timeframes: {', '.join(user_settings['timeframes'])}
+VIP: {'Yes' if user_settings['vip'] else 'No'}
+Engine: Running
+"""
         await q.edit_message_text(msg)
 
-# ================== MAIN ==================
-
+# --- MAIN ---
 def main():
     if not BOT_TOKEN:
-        raise RuntimeError(
-            "❌ BOT_TOKEN not found. "
-            "Add BOT_TOKEN in Railway → Variables"
-        )
+        raise RuntimeError("❌ BOT_TOKEN not found. Check your environment variables.")
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(buttons))
 
