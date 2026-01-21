@@ -1,27 +1,23 @@
 import requests
-import random
+import pandas as pd
 
-BINANCE_ENDPOINTS = [
-    "https://api.binance.com",
-    "https://api1.binance.com",
-    "https://api2.binance.com",
-    "https://api3.binance.com"
-]
+def get_klines(symbol, interval, limit=100):
+    url = "https://api.binance.com/api/v3/klines"
+    params = {
+        "symbol": symbol,
+        "interval": interval,
+        "limit": limit
+    }
+    r = requests.get(url, params=params, timeout=10)
+    data = r.json()
 
-def get_binance_24h_data():
-    base = random.choice(BINANCE_ENDPOINTS)
-    url = f"{base}/api/v3/ticker/24hr"
+    df = pd.DataFrame(data, columns=[
+        "time","open","high","low","close","volume",
+        "_","_","_","_","_","_"
+    ])
 
-    try:
-        r = requests.get(
-            url,
-            timeout=10,
-            headers={
-                "User-Agent": "Mozilla/5.0"
-            }
-        )
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        print("❌ Binance fetch error:", e)
-        return None
+    df[["open","high","low","close","volume"]] = df[
+        ["open","high","low","close","volume"]
+    ].astype(float)
+
+    return df
