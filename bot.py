@@ -1,133 +1,114 @@
+# bot.py
 import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
-
 from config import *
 from engine import run_engine
 
-# --- USER SETTINGS ---
 user_settings = {
-    "coins": [],
-    "timeframe": DEFAULT_TIMEFRAME,
+    "coins": HALAL_COINS,
+    "selected_coins": [],
+    "timeframes": [DEFAULT_TIMEFRAME],
     "interval": SCAN_INTERVAL,
-    "chat_id": None
+    "mode": "silent",  # silent / aggressive
+    "channel": "vip",  # vip / free
+    "chat_id": None,
+    "confidence": 50
 }
 
-# --- HELPER FUNCTIONS ---
-def build_coin_keyboard(coins, selected=[]):
-    kb = []
-    row = []
-    for i, coin in enumerate(coins, 1):
-        text = f"{coin} {'✅' if coin in selected else ''}"
-        row.append(InlineKeyboardButton(text, callback_data=f"coin_{coin}"))
-        if i % 3 == 0:
-            kb.append(row)
-            row = []
-    if row:
-        kb.append(row)
-    kb.append([InlineKeyboardButton("Confirm ✅", callback_data="confirm_coins")])
-    kb.append([InlineKeyboardButton("Select All ✅", callback_data="select_all")])
-    return InlineKeyboardMarkup(kb)
-
-# --- BOT HANDLERS ---
+# --- START COMMAND ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_settings["chat_id"] = update.effective_chat.id
-    user_settings["coins"] = []
-
     keyboard = [
-        [InlineKeyboardButton("🕌 Halal Coins Only", callback_data="halal")],
+        [InlineKeyboardButton("🕌 Halal Coins", callback_data="halal")],
         [InlineKeyboardButton("💹 All Coins", callback_data="all")],
         [InlineKeyboardButton("⏱ Timeframe", callback_data="tf")],
-        [InlineKeyboardButton("⏩ Skip (Auto Mode)", callback_data="skip")],
-        [InlineKeyboardButton("📡 Status", callback_data="status")]
+        [InlineKeyboardButton("🎚 Mode", callback_data="mode")],
+        [InlineKeyboardButton("📡 Status", callback_data="status")],
+        [InlineKeyboardButton("⏩ Auto Mode / Skip", callback_data="skip")],
+        [InlineKeyboardButton("💎 Channel", callback_data="channel")]
     ]
+    await update.message.reply_text("🕌 Halal Traders Bot\nSmart Spot Signals",
+                                    reply_markup=InlineKeyboardMarkup(keyboard))
 
-    await update.message.reply_text(
-        "🕌 Halal Traders Bot\nSmart Spot Signals",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
+# --- BUTTON HANDLER ---
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    data = q.data
 
-    # --- MODE SELECTION ---
-    if data == "halal":
-        context.user_data["available_coins"] = HALAL_COINS.copy()
-        context.user_data["selected_coins"] = []
-        await q.edit_message_text(
-            "🕌 Select Halal coins to monitor:",
-            reply_markup=build_coin_keyboard(HALAL_COINS, [])
-        )
-
-    elif data == "all":
-        context.user_data["available_coins"] = ALL_COINS.copy()
-        context.user_data["selected_coins"] = []
-        await q.edit_message_text(
-            "💹 Select coins to monitor:",
-            reply_markup=build_coin_keyboard(ALL_COINS, [])
-        )
-
-    # --- COIN SELECTION ---
-    elif data.startswith("coin_"):
-        coin = data.replace("coin_", "")
-        selected = context.user_data.get("selected_coins", [])
-        if coin in selected:
-            selected.remove(coin)
+    # --- COINS ---
+    if q.data == "halal":
+        user_settings["coins"] = HALAL_COINS
+        kb = [[InlineKeyboardButton(c, callback_data=f"coin_{c}")] for c in HALAL_COINS]
+        kb.append([InlineKeyboardButton("✅ Confirm", callback_data="confirm_coins")])
+        await q.edit_message_text("Select Halal Coins:", reply_markup=InlineKeyboardMarkup(kb))
+    elif q.data == "all":
+        user_settings["coins"] = ALL_COINS
+        kb = [[InlineKeyboardButton(c, callback_data=f"coin_{c}")] for c in ALL_COINS]
+        kb.append([InlineKeyboardButton("Select All", callback_data="select_all")])
+        kb.append([InlineKeyboardButton("✅ Confirm", callback_data="confirm_coins")])
+        await q.edit_message_text("Select Coins:", reply_markup=InlineKeyboardMarkup(kb))
+    elif q.data.startswith("coin_"):
+        coin = q.data.split("_")[1]
+        if coin in user_settings["selected_coins"]:
+            user_settings["selected_coins"].remove(coin)
         else:
-            selected.append(coin)
-        context.user_data["selected_coins"] = selected
-        await q.edit_message_text(
-            "Select coins to monitor:",
-            reply_markup=build_coin_keyboard(context.user_data["available_coins"], selected)
-        )
+            user_settings["selected_coins"].append(coin)
+        await q.answer(f"Selected: {', '.join(user_settings['selected_coins'])}")
+    elif q.data == "select_all":
+        user_settings["selected_coins"] = user_settings["coins"]
+        await q.answer(f"All coins selected ({len(user_settings['coins'])})")
+    elif q.data == "confirm_coins":
+        if not user_settings["selected_coins"]:
+            await q.answer("⚠️ Select at least one coin")
+        else:
+            await q.edit_message_text(f"✅ Coins confirmed: {', '.join(user_settings['selected_coins'])}")
 
-    elif data == "select_all":
-        context.user_data["selected_coins"] = context.user_data["available_coins"].copy()
-        await q.edit_message_text(
-            "All coins selected ✅",
-            reply_markup=build_coin_keyboard(context.user_data["available_coins"], context.user_data["selected_coins"])
-        )
+    # --- TIMEFRAMES ---
+    elif q.data == "tf":
+        kb = [[InlineKeyboardButton(x, callback_data=x)] for x in ["5m", "15m", "1h", "4h", "1d"]]
+        kb.append([InlineKeyboardButton("Confirm", callback_data="confirm_tf")])
+        await q.edit_message_text("Select Timeframes:", reply_markup=InlineKeyboardMarkup(kb))
+    elif q.data in ["5m", "15m", "1h", "4h", "1d"]:
+        if q.data not in user_settings["timeframes"]:
+            user_settings["timeframes"].append(q.data)
+        else:
+            user_settings["timeframes"].remove(q.data)
+        await q.answer(f"Selected: {', '.join(user_settings['timeframes'])}")
+    elif q.data == "confirm_tf":
+        await q.edit_message_text(f"✅ Timeframes confirmed: {', '.join(user_settings['timeframes'])}")
 
-    elif data == "confirm_coins":
-        user_settings["coins"] = context.user_data.get("selected_coins", [])
-        await q.edit_message_text(f"✅ Monitoring coins: {', '.join(user_settings['coins'])}")
-        asyncio.create_task(run_engine(context, user_settings))
+    # --- MODE ---
+    elif q.data == "mode":
+        kb = [[InlineKeyboardButton("Silent", callback_data="mode_silent")],
+              [InlineKeyboardButton("Aggressive", callback_data="mode_aggressive")]]
+        await q.edit_message_text("Select Mode:", reply_markup=InlineKeyboardMarkup(kb))
+    elif q.data.startswith("mode_"):
+        user_settings["mode"] = q.data.split("_")[1]
+        await q.edit_message_text(f"✅ Mode set to {user_settings['mode']}")
 
-    # --- TIMEFRAME ---
-    elif data == "tf":
-        kb = [
-            [InlineKeyboardButton("5m", callback_data="5m"),
-             InlineKeyboardButton("15m", callback_data="15m"),
-             InlineKeyboardButton("1h", callback_data="1h")],
-            [InlineKeyboardButton("4h", callback_data="4h"),
-             InlineKeyboardButton("1d", callback_data="1d")]
-        ]
-        await q.edit_message_text(
-            "⏱ Select Timeframe",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
+    # --- CHANNEL ---
+    elif q.data == "channel":
+        kb = [[InlineKeyboardButton("VIP", callback_data="channel_vip")],
+              [InlineKeyboardButton("Free", callback_data="channel_free")]]
+        await q.edit_message_text("Select Channel:", reply_markup=InlineKeyboardMarkup(kb))
+    elif q.data.startswith("channel_"):
+        user_settings["channel"] = q.data.split("_")[1]
+        await q.edit_message_text(f"✅ Channel set to {user_settings['channel']}")
 
-    elif data in ["5m", "15m", "1h", "4h", "1d"]:
-        user_settings["timeframe"] = data
-        await q.edit_message_text(f"✅ Timeframe set to {data}")
-
-    # --- AUTO / SKIP ---
-    elif data == "skip":
+    # --- AUTO MODE / SKIP ---
+    elif q.data == "skip":
         await q.edit_message_text("⏩ Auto mode started")
-        if not user_settings["coins"]:
-            user_settings["coins"] = HALAL_COINS.copy()
         asyncio.create_task(run_engine(context, user_settings))
 
     # --- STATUS ---
-    elif data == "status":
+    elif q.data == "status":
         msg = f"""
 📡 BOT STATUS
-
-Mode: {"Halal" if user_settings["coins"]==HALAL_COINS else "All Coins"}
-Timeframe: {user_settings['timeframe']}
-Coins: {len(user_settings['coins'])}
+Mode: {user_settings['mode']}
+Channel: {user_settings['channel']}
+Timeframes: {', '.join(user_settings['timeframes'])}
+Coins: {len(user_settings['selected_coins']) if user_settings['selected_coins'] else 'None'}
 Engine: Running
 """
         await q.edit_message_text(msg)
@@ -135,12 +116,10 @@ Engine: Running
 # --- MAIN ---
 def main():
     if not BOT_TOKEN:
-        raise RuntimeError("❌ BOT_TOKEN not found. Check Railway variables.")
-
+        raise RuntimeError("❌ BOT_TOKEN not found.")
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(buttons))
-
     print("✅ Halal Traders Bot Running")
     app.run_polling()
 
